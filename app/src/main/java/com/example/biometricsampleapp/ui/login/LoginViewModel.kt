@@ -16,6 +16,7 @@ import com.example.biometricsampleapp.data.LoginRepository
 import com.example.biometricsampleapp.R
 import com.example.biometricsampleapp.biometric.BiometricAvailabilityStatuses
 import com.example.biometricsampleapp.biometric.BiometricHelper
+import com.example.biometricsampleapp.biometric.CouldNotEnrollForBiometricException
 import com.example.biometricsampleapp.biometric.NoPinCodeSavedOnDeviceToAuthenticateWithException
 import com.example.biometricsampleapp.biometric.SecurePreferences
 import com.example.biometricsampleapp.data.LoginDataSource
@@ -31,7 +32,7 @@ sealed class LoginUIState {
     data class Attempted(val result: Result<LoggedInUser>, val shouldEnrollForBiometrics: Boolean = false) : LoginUIState()
     data object Idle: LoginUIState()
 }
-class LoginViewModel(application: BiometricSampleApp) : AndroidViewModel(application) {
+class LoginViewModel(val application: BiometricSampleApp, private var userIdToConnect: String = "1") : AndroidViewModel(application) {
 
     companion object {
         val Factory: ViewModelProvider.Factory = object : ViewModelProvider.Factory {
@@ -49,6 +50,7 @@ class LoginViewModel(application: BiometricSampleApp) : AndroidViewModel(applica
         }
     }
 
+    private var userSavedForEnrollment: LoggedInUser? = null
     val uiState = MutableLiveData<LoginUIState>(LoginUIState.Idle)
     fun getUiState(): LiveData<LoginUIState> = uiState
 
@@ -57,8 +59,8 @@ class LoginViewModel(application: BiometricSampleApp) : AndroidViewModel(applica
 
     private val loginRepository = LoginRepository(LoginDataSource())
 
-    private val biometricHelper = BiometricHelper(application, userId = "1")
-    private val securePreferences = SecurePreferences(application, userId = "1")
+    private var biometricHelper = BiometricHelper(application, userId = userIdToConnect)
+    private var securePreferences = SecurePreferences(application, userId = userIdToConnect)
 
     private val biometricAvailable = MutableLiveData<BiometricAvailabilityStatuses>()
     fun getBiometricAvailable(): LiveData<BiometricAvailabilityStatuses> = biometricAvailable
@@ -67,6 +69,14 @@ class LoginViewModel(application: BiometricSampleApp) : AndroidViewModel(applica
     fun getCanTriggerBiometricPrompt(): LiveData<Boolean> = canTriggerBiometricPrompt
 
     private var pincodeSavedForEnrollment: String? = null
+
+    fun changeUserToConnect(userId: String) {
+        userIdToConnect = userId
+        biometricHelper = BiometricHelper(application, userId = userIdToConnect)
+        securePreferences = SecurePreferences(application, userId = userIdToConnect)
+        checkBiometricSystemStatus()
+        checkIfBiometricPromptCanBeTriggered()
+    }
 
     /**
      * For debugging purposes
@@ -98,32 +108,27 @@ class LoginViewModel(application: BiometricSampleApp) : AndroidViewModel(applica
         biometricAvailable.value = biometricHelper.getBiometricAvailabilityStatuses()
     }
 
-    // We save pin code if server accepted it
-    fun savePin(pin: String) {
-        viewModelScope.launch {
-            val encryptedPin = biometricHelper.encryptPin(pin)
-            securePreferences.saveEncryptedPin(encryptedPin)
-        }
-    }
-
     fun loginWithBiometric(activity: FragmentActivity) {
-        biometricHelper.showBiometricPrompt(activity) { result ->
-            // L'utilisateur à réussi à vérifier son empreinte digitale
-            result.onSuccess { pairOfData ->
-                // On déchiffre le pincode stocké ici
+        Log.d("LoginViewModel", "loginWithBiometric started")
+        securePreferences.getEncryptedPin()?.let { encryptedPin ->
+            Log.d("LoginViewModel", "Got encrypted pin: $encryptedPin")
+            biometricHelper.showBiometricPrompt(activity, encryptedPin) { result ->
+                Log.d("LoginViewModel", "User authenticated with biometric")
+                // L'utilisateur à réussi à vérifier son empreinte digitale
+                result.onSuccess { pairOfData ->
+                    // On déchiffre le pincode stocké ici
+                    Log.d("LoginViewModel", "Decrypted pincode: ${pairOfData.first}")
+                    val cryptoObject = pairOfData.second
+                    val decryptedPincode = pairOfData.first
 
-                val cryptoObject = pairOfData.second
-                val authenticationResult = pairOfData.first
-                securePreferences.getEncryptedPin()?.let { encryptedPin ->
-                    val decryptedPin = biometricHelper.decryptPin(encryptedPin, cryptoObject)
-
-                    // Puis on se connecte avec le pincode déchiffré -- Serveur accepte ou non
                     viewModelScope.launch {
-                        val userLoggedIn = loginRepository.loginWithPincode(decryptedPin)
+                        Log.d("LoginViewModel", "Trying to login with pincode")
+                        val userLoggedIn = loginRepository.loginWithPincode(decryptedPincode, userIdToConnect)
                         delay(1500)
 
                         withContext(Dispatchers.Main) {
                             userLoggedIn.onSuccess { userLoggedData ->
+                                Log.d("LoginViewModel", "User logged in: $userLoggedData")
                                 uiState.value =
                                     LoginUIState.Attempted(Result.success(userLoggedData))
                             }
@@ -131,34 +136,51 @@ class LoginViewModel(application: BiometricSampleApp) : AndroidViewModel(applica
                             userLoggedIn.onFailure {
                                 // L'utilisateur n'a pas réussi à se connecter avec le pincode sur le serveur
                                 uiState.value = LoginUIState.Attempted(Result.failure(it))
-
+                                Log.e("LoginViewModel", "Error: $it")
                                 // Il faudrait désactiver la biométrie pour la prochaine fois dans ce cas de figure
                             }
                         }
                     }
-                } ?: run {
-                    // L'utilisateur n'a pas de pincode enregistré
-                    uiState.value = LoginUIState.Attempted(Result.failure(
-                        NoPinCodeSavedOnDeviceToAuthenticateWithException()
-                    ))
                 }
 
-            }
+                result.onFailure {
+                    Log.w("LoginViewModel", "Error could not authenticate with biometric : $it")
+                    // L'utilisateur n'a pas réussi à vérifier son empreinte digitale
+                    uiState.value = LoginUIState.Attempted(Result.failure(it))
+                }
 
-            result.onFailure {
-                // L'utilisateur n'a pas réussi à vérifier son empreinte digitale
-                uiState.value = LoginUIState.Attempted(Result.failure(it))
-            }
-
 
             }
+        } ?: run {
+            Log.d("LoginViewModel", "No pincode saved on device to authenticate with")
+            uiState.value = LoginUIState.Attempted(Result.failure(
+                NoPinCodeSavedOnDeviceToAuthenticateWithException()
+            ))
         }
+    }
 
     fun enrollForBiometric(activity: FragmentActivity) {
-        pincodeSavedForEnrollment?.let {
-            biometricHelper.offerBiometricEnrollment(activity, it) {
-                it.onSuccess {
+        Log.d("LoginViewModel", "Enrolling for biometrics...")
+        pincodeSavedForEnrollment?.let { pincode ->
+            Log.d("LoginViewModel", "Enrolling for biometrics, pincode: $pincode")
+            biometricHelper.offerBiometricEnrollment(activity, pincode) {
 
+                it.onSuccess { data ->
+                    Log.d("LoginViewModel", "Biometric enrolled successfully, now saving pincode")
+
+                securePreferences.saveEncryptedPin(data.first)
+                    Log.d("LoginViewModel", "Pincode saved successfully")
+                // Successfully saved pincode, can continue login
+                    uiState.value = LoginUIState.Attempted(Result.success(LoggedInUser(userIdToConnect, "Jane Doe")))
+                }
+
+                it.onFailure {
+                    Log.d("LoginViewModel", "Could not enroll for biometrics, sending CouldNotEnrollForBiometricException")
+                    uiState.value = LoginUIState.Attempted(Result.failure(
+                        CouldNotEnrollForBiometricException(loggedInUser = LoggedInUser("1", "Jane Doe"))
+                    ))
+                    // Could not save pincode, handle error here
+                    // Probably continue login while displaying a snack bar to inform user that biometric was not saved
                 }
             }
         } ?: run {
@@ -170,7 +192,6 @@ class LoginViewModel(application: BiometricSampleApp) : AndroidViewModel(applica
 
     fun login(pincode: String? = null, activity: FragmentActivity? = null) {
         uiState.value = LoginUIState.Loading
-        // Todo:
         // 1. Check if keys exists for this user -> KeyStore and SecurePreferences
         // 2. Check if biometric is available
         // 3. Launch Biometric Prompt
@@ -191,7 +212,7 @@ class LoginViewModel(application: BiometricSampleApp) : AndroidViewModel(applica
             // can be launched in a separate asynchronous job
             viewModelScope.launch {
                 delay(2000)
-                val result = loginRepository.loginWithPincode(pincodeEntered)
+                val result = loginRepository.loginWithPincode(pincodeEntered, userIdToConnect)
 
                 result.onSuccess { user ->
                     if (biometricHelper.isBiometricAvailable() && (!securePreferences.hasEncryptedPin() || !biometricHelper.isBiometricKeyValid())) {

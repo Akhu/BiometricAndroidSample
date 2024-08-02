@@ -9,14 +9,16 @@ import androidx.biometric.BiometricManager.Authenticators.DEVICE_CREDENTIAL
 import androidx.biometric.BiometricPrompt
 import androidx.biometric.BiometricPrompt.AuthenticationResult
 import androidx.fragment.app.FragmentActivity
+import com.example.biometricsampleapp.data.model.LoggedInUser
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
+import javax.crypto.spec.IvParameterSpec
 
 class BiometricAuthenticationError(message: String, code: Int) : Exception(message)
 class NoPinCodeSavedOnDeviceToAuthenticateWithException(message: String = "No pin code saved on device to authenticate with") : Exception(message)
-
+class CouldNotEnrollForBiometricException(message: String = "Could not enroll for biometric authentication", val loggedInUser: LoggedInUser) : Exception(message)
 
 enum class BiometricAvailabilityStatuses {
     BIOMETRIC_SUCCESS,
@@ -110,9 +112,14 @@ class BiometricHelper(val application: Application, private val userId: String) 
     /**
      * On récupère la clé secrète stockée dans le KeyStore via le keyName défini (1 nom par user / par valeur)
      */
-    fun getSecretKey(): SecretKey {
+    private fun getSecretKey(): SecretKey {
         val keyName = getKeyNameForUser()
-        return (keyStore.getEntry(keyName, null) as KeyStore.SecretKeyEntry).secretKey
+        return (keyStore.getKey(keyName, null) as SecretKey)
+    }
+
+    fun hasSecretKey() : Boolean {
+        val keyName = getKeyNameForUser()
+        return keyStore.containsAlias(keyName)
     }
 
     fun isBiometricKeyValid(): Boolean {
@@ -147,31 +154,81 @@ class BiometricHelper(val application: Application, private val userId: String) 
         return Cipher.getInstance(KeyProperties.KEY_ALGORITHM_AES + "/" + KeyProperties.BLOCK_MODE_CBC + "/" + KeyProperties.ENCRYPTION_PADDING_PKCS7)
     }
 
-    fun encryptPin(pin: String): String {
+    fun authenticatedEncryptPin(pin: String, authenticatedCipher: Cipher): String {
+        val iv = authenticatedCipher.iv
+
+        val encryptedBytes = authenticatedCipher.doFinal(pin.toByteArray(Charsets.UTF_8))
+        val combined = iv + encryptedBytes
+        return Base64.encodeToString(combined, Base64.DEFAULT)
+    }
+
+    fun authenticatedDecryptPin(encryptedPin: ByteArray, authenticatedCipher: Cipher): String {
+        val decryptedBytes = authenticatedCipher.doFinal(encryptedPin)
+        return String(decryptedBytes, Charsets.UTF_8)
+    }
+
+    fun decryptePincodeBiometricPrompt(
+        activity: FragmentActivity,
+        encryptedPin: String,
+        completion: (Result<String>) -> Unit
+    ) {
         val cipher = getCipher()
         val secretKey = getSecretKey()
 
-        cipher.init(Cipher.ENCRYPT_MODE, secretKey)
+        val combined = Base64.decode(encryptedPin, Base64.DEFAULT)
+        val iv = combined.slice(0 until 16).toByteArray()
+        val encryptedBytes = combined.slice(16 until combined.size).toByteArray()
 
-        val encryptedBytes = cipher.doFinal(pin.toByteArray(Charsets.UTF_8))
-        return Base64.encodeToString(encryptedBytes, android.util.Base64.DEFAULT)
-    }
+        cipher.init(Cipher.DECRYPT_MODE, secretKey, IvParameterSpec(iv))
 
-    fun decryptPin(encryptedPin: String, cryptoObject: BiometricPrompt.CryptoObject): String {
-        cryptoObject.cipher?.let { cipher ->
-            val secretKey = getSecretKey()
-            cipher.init(Cipher.DECRYPT_MODE, secretKey)
-            val encryptedBytes = Base64.decode(encryptedPin, Base64.DEFAULT)
-            val decryptedBytes = cipher.doFinal(encryptedBytes)
-            return String(decryptedBytes, Charsets.UTF_8)
-        } ?: throw IllegalArgumentException("CryptoObject is null, cannot decrypt pin")
+        val cryptoObject = BiometricPrompt.CryptoObject(cipher)
+
+        val promptInfo = BiometricPrompt.PromptInfo.Builder()
+            .setTitle("Authentification biométrique")
+            .setSubtitle("Utilisez votre empreinte digitale pour afficher votre code pin")
+            .setNegativeButtonText("Annuler")
+            .build()
+
+        val biometricPrompt = BiometricPrompt(activity, object : BiometricPrompt.AuthenticationCallback() {
+            override fun onAuthenticationSucceeded(result: AuthenticationResult) {
+                result.cryptoObject?.let { cryptoObject ->
+                    val authenticatedDecryptedPin = authenticatedDecryptPin(encryptedBytes, cipher)
+                    completion(Result.success(authenticatedDecryptedPin))
+                }
+
+            }
+
+            override fun onAuthenticationFailed() {
+                super.onAuthenticationFailed()
+            }
+
+            override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                completion(Result.failure(BiometricAuthenticationError(errString.toString(), errorCode)))
+            }
+        })
+
+
+
+        biometricPrompt.authenticate(promptInfo, cryptoObject)
+
     }
 
 
     fun showBiometricPrompt(
         activity: FragmentActivity,
-        completion: (Result<Pair<AuthenticationResult, BiometricPrompt.CryptoObject>>) -> Unit
+        encryptedPin: String,
+        completion: (Result<Pair<String, BiometricPrompt.CryptoObject>>) -> Unit
     )  {
+        val cipher = getCipher()
+        val secretKey = getSecretKey()
+
+        val combined = Base64.decode(encryptedPin, Base64.DEFAULT)
+        val iv = combined.slice(0 until 16).toByteArray()
+        val encryptedBytes = combined.slice(16 until combined.size).toByteArray()
+
+        cipher.init(Cipher.DECRYPT_MODE, secretKey, IvParameterSpec(iv))
+
+        val cryptoObject = BiometricPrompt.CryptoObject(cipher)
 
         // Face ID ?
         val promptInfo = BiometricPrompt.PromptInfo.Builder()
@@ -183,7 +240,8 @@ class BiometricHelper(val application: Application, private val userId: String) 
         val biometricPrompt = BiometricPrompt(activity, object : BiometricPrompt.AuthenticationCallback() {
             override fun onAuthenticationSucceeded(result: AuthenticationResult) {
                 result.cryptoObject?.let { cryptoObject ->
-                    completion(Result.success(Pair(result, cryptoObject)))
+                    val authenticatedDecryptedPin = authenticatedDecryptPin(encryptedBytes, cipher)
+                    completion(Result.success(Pair(authenticatedDecryptedPin, cryptoObject)))
                 }
 
             }
@@ -197,20 +255,24 @@ class BiometricHelper(val application: Application, private val userId: String) 
             }
         })
 
-        val cipher = getCipher()
-        val secretKey = getSecretKey()
 
-        cipher.init(Cipher.ENCRYPT_MODE, secretKey)
-        val cryptoObject = BiometricPrompt.CryptoObject(cipher)
 
         biometricPrompt.authenticate(promptInfo, cryptoObject)
     }
 
-    fun offerBiometricEnrollment(activity: FragmentActivity, pincode: String, completion: (Result<Pair<AuthenticationResult, BiometricPrompt.CryptoObject>>) -> Unit) {
+    fun offerBiometricEnrollment(activity: FragmentActivity, pincode: String, completion: (Result<Pair<String, BiometricPrompt.CryptoObject>>) -> Unit) {
 
         val cipher = getCipher()
-        val secretKey = createBiometricKey()
+        if (hasSecretKey()) {
+            removeBiometricKey()
+            createBiometricKey()
+        } else {
+           createBiometricKey()
+        }
+        val secretKey = getSecretKey()
+        cipher.init(Cipher.ENCRYPT_MODE, secretKey)
 
+        val cryptoObject = BiometricPrompt.CryptoObject(cipher)
 
         val promptInfo = BiometricPrompt.PromptInfo.Builder()
             .setTitle("Authentification biométrique")
@@ -221,7 +283,8 @@ class BiometricHelper(val application: Application, private val userId: String) 
         val biometricPrompt = BiometricPrompt(activity, object : BiometricPrompt.AuthenticationCallback() {
             override fun onAuthenticationSucceeded(result: AuthenticationResult) {
                 result.cryptoObject?.let { cryptoObject ->
-                    completion(Result.success(Pair(result, cryptoObject)))
+                    val encryptedPin = authenticatedEncryptPin(pincode, cipher)
+                    completion(Result.success(Pair(encryptedPin, cryptoObject)))
                 }
 
             }
@@ -235,6 +298,6 @@ class BiometricHelper(val application: Application, private val userId: String) 
             }
         })
 
-        biometricPrompt.authenticate(promptInfo)
+        biometricPrompt.authenticate(promptInfo, cryptoObject)
     }
 }

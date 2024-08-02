@@ -18,11 +18,11 @@ class LoginDataSource {
         }
     }
 
-    fun loginWithPincode(pincode: String): Result<LoggedInUser> {
+    fun loginWithPincode(pincode: String, userId: String): Result<LoggedInUser> {
         try {
             // TODO: handle loggedInUser authentication
             if (pincode == "5555") {
-                val fakeUser = LoggedInUser(java.util.UUID.randomUUID().toString(), "Jane Doe")
+                val fakeUser = LoggedInUser(userId, "Jane Doe")
                 return Result.success(fakeUser)
             } else {
                 return Result.failure(IOException("Wrong Pincode"))

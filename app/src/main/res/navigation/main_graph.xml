@@ -19,10 +19,9 @@
         android:name="com.example.biometricsampleapp.HomeScreenFragment"
         android:label="fragment_home_screen"
         tools:layout="@layout/fragment_home_screen" >
+
         <argument
-            android:name="username"
-            app:argType="string" />
-        <argument android:name="userId"
-            app:argType="integer" />
+            android:name="LoggedUserInformation"
+            app:argType="com.example.biometricsampleapp.data.model.LoggedInUser" />
     </fragment>
 </navigation>

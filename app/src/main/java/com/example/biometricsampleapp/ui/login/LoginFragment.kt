@@ -25,6 +25,8 @@ import androidx.annotation.RequiresApi
 import androidx.appcompat.app.AlertDialog
 import androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG
 import androidx.biometric.BiometricManager.Authenticators.DEVICE_CREDENTIAL
+import androidx.core.widget.doAfterTextChanged
+import androidx.core.widget.doOnTextChanged
 import androidx.fragment.app.viewModels
 import androidx.navigation.fragment.findNavController
 import com.example.biometricsampleapp.databinding.FragmentLoginBinding
@@ -33,6 +35,7 @@ import com.example.biometricsampleapp.R
 import com.example.biometricsampleapp.biometric.BiometricAvailabilityStatuses
 import com.example.biometricsampleapp.biometric.BiometricAvailabilityStatuses.*
 import com.example.biometricsampleapp.biometric.BiometricHelper
+import com.example.biometricsampleapp.biometric.CouldNotEnrollForBiometricException
 import com.example.biometricsampleapp.data.model.LoggedInUser
 
 class LoginFragment : Fragment() {
@@ -70,6 +73,8 @@ class LoginFragment : Fragment() {
         val loginButton = binding.login
         val loadingProgressBar = binding.loading
 
+        val userIdEditText = binding.userIdEditText
+
         binding.debugInfo.text = loginViewModel.getDebugInfos()
 
         loginViewModel.loginFormState.observe(viewLifecycleOwner,
@@ -91,14 +96,19 @@ class LoginFragment : Fragment() {
                         // Go to HomeScreen
                         if(state.shouldEnrollForBiometrics) {
                             offerBiometricEnrollment()
+                            return@onSuccess
                         }
                         // If not biometry enabled, show biometry setup screen
                         updateUiWithUser(data)
                     }
 
-                    state.result.onFailure {
-                        // Show error message
-                        showLoginFailed(R.string.login_failed)
+                    state.result.onFailure { failure ->
+                        if (failure is CouldNotEnrollForBiometricException) {
+                            updateUiWithUser(failure.loggedInUser)
+                        } else {
+                            // Show error message
+                            showLoginFailed(R.string.login_failed)
+                        }
                     }
 
                 }
@@ -127,6 +137,10 @@ class LoginFragment : Fragment() {
                     passwordEditText.text.toString()
                 )
             }
+        }
+        userIdEditText.text = Editable.Factory.getInstance().newEditable("1")
+        userIdEditText.doAfterTextChanged {
+            loginViewModel.changeUserToConnect(it.toString())
         }
 
         passwordEditText.addTextChangedListener(afterTextChangedListener)
@@ -181,7 +195,8 @@ class LoginFragment : Fragment() {
         val appContext = context?.applicationContext ?: return
         Toast.makeText(appContext, welcome, Toast.LENGTH_LONG).show()
 
-        findNavController().navigate(R.id.action_loginFragment_to_homeScreenFragment)
+        val action = LoginFragmentDirections.actionLoginFragmentToHomeScreenFragment(model)
+        findNavController().navigate(action)
     }
 
     private fun showLoginFailed(@StringRes errorString: Int) {
@@ -198,9 +213,11 @@ class LoginFragment : Fragment() {
         AlertDialog.Builder(requireActivity())
             .setTitle("Activer l'authentification biométrique ?")
             .setMessage("Voulez-vous utiliser votre empreinte digitale ou la reconnaissance faciale pour vous connecter plus rapidement la prochaine fois ?")
-            .setPositiveButton("Activer", null)
+            .setPositiveButton("Activer" ) { _, _ ->
+                loginViewModel.enrollForBiometric(requireActivity())
+            }
             .setNegativeButton("Pas maintenant") { _, _ ->
-                //loginViewModel.removeBiometricDataForUser()
+                loginViewModel.removeBiometricDataForUser()
             }
             .show()
     }

@@ -28,10 +28,10 @@ class LoginRepository(val dataSource: LoginDataSource) {
     }
 
 
-    fun loginWithPincode(pincode: String): Result<LoggedInUser> {
+    fun loginWithPincode(pincode: String, userId: String): Result<LoggedInUser> {
         // handle login
 
-        val result = dataSource.loginWithPincode(pincode)
+        val result = dataSource.loginWithPincode(pincode, userId)
 
         result.onSuccess {
             setLoggedInUser(it)

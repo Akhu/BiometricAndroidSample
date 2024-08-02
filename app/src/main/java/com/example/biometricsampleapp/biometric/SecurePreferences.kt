@@ -3,6 +3,7 @@ package com.example.biometricsampleapp.biometric
 import android.content.Context
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import com.example.biometricsampleapp.data.model.LoggedInUser
 
 class SecurePreferences(context: Context, userId: String) {
     private val encryptedPinPrefix = "encrypted_pin_"

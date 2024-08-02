@@ -21,7 +21,7 @@
         android:id="@+id/resetBiometricPromptByDefault"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Reset Biometric Prompt"
+        android:text="Descrypt Pincode with Biometric - Test"
         app:layout_constraintBottom_toTopOf="@+id/resetKeyStore"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintHorizontal_bias="0.5"
@@ -32,7 +32,7 @@
         android:id="@+id/logoutButton"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Logout"
+        android:text="Test"
         app:layout_constraintBottom_toTopOf="@+id/resetBiometricPromptByDefault"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintHorizontal_bias="0.5"
@@ -44,11 +44,13 @@
         android:id="@+id/resetKeyStore"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Reset Keystore"
+        android:text="Clear KeyStore and Encrypted Pincode"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintHorizontal_bias="0.5"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@+id/resetBiometricPromptByDefault" />
+
+
 
 </androidx.constraintlayout.widget.ConstraintLayout>
