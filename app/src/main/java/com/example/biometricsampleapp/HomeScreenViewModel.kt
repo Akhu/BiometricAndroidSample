@@ -49,7 +49,7 @@ class HomeScreenViewModel(val loggedInUser: LoggedInUser, application: Applicati
         debugInfos.value = "Biometric available: ${biometricHelper.getBiometricAvailabilityStatuses()}\n" +
                 "Pincode saved: ${securePreferences.hasEncryptedPin()}\n" +
                 "Secure preferences available: ${securePreferences.getEncryptedPin()}\n" +
-                "Key available: ${biometricHelper.isBiometricKeyValid()}" +
+                "Key available: ${biometricHelper.isBiometricKeyValid("Homescreen Debug infos")}" +
                 "Connected User ID: $loggedInUser"
     }
 

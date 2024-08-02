@@ -27,6 +27,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 
+
 sealed class LoginUIState {
     data object Loading : LoginUIState()
     data class Attempted(val result: Result<LoggedInUser>, val shouldEnrollForBiometrics: Boolean = false) : LoginUIState()
@@ -65,7 +66,7 @@ class LoginViewModel(val application: BiometricSampleApp, private var userIdToCo
     private val biometricAvailable = MutableLiveData<BiometricAvailabilityStatuses>()
     fun getBiometricAvailable(): LiveData<BiometricAvailabilityStatuses> = biometricAvailable
 
-    private val canTriggerBiometricPrompt = MutableLiveData<Boolean>()
+    private val canTriggerBiometricPrompt = MutableLiveData(false)
     fun getCanTriggerBiometricPrompt(): LiveData<Boolean> = canTriggerBiometricPrompt
 
     private var pincodeSavedForEnrollment: String? = null
@@ -89,7 +90,7 @@ class LoginViewModel(val application: BiometricSampleApp, private var userIdToCo
         return "Biometric available: ${biometricAvailable.value}\n" +
                 "Pincode saved: ${securePreferences.hasEncryptedPin()}\n" +
                 "Secure preferences available: ${securePreferences.getEncryptedPin()}\n" +
-                "Key available: ${biometricHelper.isBiometricKeyValid()}"
+                "Key available: ${biometricHelper.isBiometricKeyValid("Debug LoginViewModel")}"
     }
 
 
@@ -100,8 +101,18 @@ class LoginViewModel(val application: BiometricSampleApp, private var userIdToCo
 
     }
 
-    fun checkIfBiometricPromptCanBeTriggered() {
-        canTriggerBiometricPrompt.value = biometricHelper.isBiometricAvailable() && securePreferences.hasEncryptedPin() && biometricHelper.isBiometricKeyValid()
+    private fun checkIfBiometricPromptCanBeTriggered() {
+        try {
+            canTriggerBiometricPrompt.value =
+                biometricHelper.isBiometricAvailable()
+                        && securePreferences.hasEncryptedPin()
+                        && biometricHelper.isBiometricKeyValid("checkIfBiometricPromptCanBeTriggered")
+        } catch (e: Exception) {
+            Log.e("LoginViewModel", "Error: $e")
+            canTriggerBiometricPrompt.value = false
+            return
+        }
+
     }
 
     fun checkBiometricSystemStatus() {
@@ -109,47 +120,55 @@ class LoginViewModel(val application: BiometricSampleApp, private var userIdToCo
     }
 
     fun loginWithBiometric(activity: FragmentActivity) {
+        // debug purpose
+        //securePreferences.clearEncryptedPin()
         Log.d("LoginViewModel", "loginWithBiometric started")
         securePreferences.getEncryptedPin()?.let { encryptedPin ->
             Log.d("LoginViewModel", "Got encrypted pin: $encryptedPin")
-            biometricHelper.showBiometricPrompt(activity, encryptedPin) { result ->
-                Log.d("LoginViewModel", "User authenticated with biometric")
-                // L'utilisateur à réussi à vérifier son empreinte digitale
-                result.onSuccess { pairOfData ->
-                    // On déchiffre le pincode stocké ici
-                    Log.d("LoginViewModel", "Decrypted pincode: ${pairOfData.first}")
-                    val cryptoObject = pairOfData.second
-                    val decryptedPincode = pairOfData.first
+            try {
+                biometricHelper.showBiometricPrompt(activity, encryptedPin) { result ->
+                    Log.d("LoginViewModel", "User authenticated with biometric")
+                    // L'utilisateur à réussi à vérifier son empreinte digitale
+                    result.onSuccess { pairOfData ->
+                        // On déchiffre le pincode stocké ici
+                        Log.d("LoginViewModel", "Decrypted pincode: ${pairOfData.first}")
+                        val cryptoObject = pairOfData.second
+                        val decryptedPincode = pairOfData.first
 
-                    viewModelScope.launch {
-                        Log.d("LoginViewModel", "Trying to login with pincode")
-                        val userLoggedIn = loginRepository.loginWithPincode(decryptedPincode, userIdToConnect)
-                        delay(1500)
+                        viewModelScope.launch {
+                            Log.d("LoginViewModel", "Trying to login with pincode")
+                            val userLoggedIn =
+                                loginRepository.loginWithPincode(decryptedPincode, userIdToConnect)
+                            delay(1500)
 
-                        withContext(Dispatchers.Main) {
-                            userLoggedIn.onSuccess { userLoggedData ->
-                                Log.d("LoginViewModel", "User logged in: $userLoggedData")
-                                uiState.value =
-                                    LoginUIState.Attempted(Result.success(userLoggedData))
-                            }
+                            withContext(Dispatchers.Main) {
+                                userLoggedIn.onSuccess { userLoggedData ->
+                                    Log.d("LoginViewModel", "User logged in: $userLoggedData")
+                                    uiState.value =
+                                        LoginUIState.Attempted(Result.success(userLoggedData))
+                                }
 
-                            userLoggedIn.onFailure {
-                                // L'utilisateur n'a pas réussi à se connecter avec le pincode sur le serveur
-                                uiState.value = LoginUIState.Attempted(Result.failure(it))
-                                Log.e("LoginViewModel", "Error: $it")
-                                // Il faudrait désactiver la biométrie pour la prochaine fois dans ce cas de figure
+                                userLoggedIn.onFailure {
+                                    // L'utilisateur n'a pas réussi à se connecter avec le pincode sur le serveur
+                                    uiState.value = LoginUIState.Attempted(Result.failure(it))
+                                    Log.e("LoginViewModel", "Error: $it")
+                                    // Il faudrait désactiver la biométrie pour la prochaine fois dans ce cas de figure
+                                }
                             }
                         }
                     }
+
+                    result.onFailure {
+                        Log.w("LoginViewModel", "Error could not authenticate with biometric : $it")
+                        // L'utilisateur n'a pas réussi à vérifier son empreinte digitale
+                        uiState.value = LoginUIState.Attempted(Result.failure(it))
+                    }
+
+
                 }
-
-                result.onFailure {
-                    Log.w("LoginViewModel", "Error could not authenticate with biometric : $it")
-                    // L'utilisateur n'a pas réussi à vérifier son empreinte digitale
-                    uiState.value = LoginUIState.Attempted(Result.failure(it))
-                }
-
-
+            } catch (e: Exception) {
+                Log.e("LoginViewModel", "Error: $e")
+                uiState.value = LoginUIState.Attempted(Result.failure(e))
             }
         } ?: run {
             Log.d("LoginViewModel", "No pincode saved on device to authenticate with")
@@ -215,7 +234,8 @@ class LoginViewModel(val application: BiometricSampleApp, private var userIdToCo
                 val result = loginRepository.loginWithPincode(pincodeEntered, userIdToConnect)
 
                 result.onSuccess { user ->
-                    if (biometricHelper.isBiometricAvailable() && (!securePreferences.hasEncryptedPin() || !biometricHelper.isBiometricKeyValid())) {
+                    if (biometricHelper.isBiometricAvailable()
+                        && (!securePreferences.hasEncryptedPin() || !biometricHelper.isBiometricKeyValid("Login function"))) {
                         pincodeSavedForEnrollment = pincodeEntered
                         uiState.value = LoginUIState.Attempted(
                             Result.success(user),

@@ -9,6 +9,7 @@ import androidx.annotation.StringRes
 import androidx.fragment.app.Fragment
 import android.os.Bundle
 import android.provider.Settings
+import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.text.Editable
 import android.text.TextWatcher
 import android.util.Log
@@ -36,7 +37,10 @@ import com.example.biometricsampleapp.biometric.BiometricAvailabilityStatuses
 import com.example.biometricsampleapp.biometric.BiometricAvailabilityStatuses.*
 import com.example.biometricsampleapp.biometric.BiometricHelper
 import com.example.biometricsampleapp.biometric.CouldNotEnrollForBiometricException
+import com.example.biometricsampleapp.biometric.NoPinCodeSavedOnDeviceToAuthenticateWithException
 import com.example.biometricsampleapp.data.model.LoggedInUser
+import com.google.android.material.snackbar.Snackbar
+import kotlin.math.log
 
 class LoginFragment : Fragment() {
 
@@ -103,11 +107,34 @@ class LoginFragment : Fragment() {
                     }
 
                     state.result.onFailure { failure ->
-                        if (failure is CouldNotEnrollForBiometricException) {
-                            updateUiWithUser(failure.loggedInUser)
-                        } else {
-                            // Show error message
-                            showLoginFailed(R.string.login_failed)
+
+                        when(failure) {
+                            is NoPinCodeSavedOnDeviceToAuthenticateWithException -> {
+                                Snackbar.make(
+                                    view,
+                                    "Aucun code PIN n'est enregistré sur l'appareil pour l'authentification",
+                                    Snackbar.LENGTH_LONG
+                                ).show()
+                            }
+
+                            is CouldNotEnrollForBiometricException -> {
+                                updateUiWithUser(failure.loggedInUser)
+                            }
+
+                            is KeyPermanentlyInvalidatedException -> {
+                                Log.e("Biometric", "Key invalidated")
+                                Snackbar.make(
+                                    view,
+                                    "La clé d'authentification biométrie à été révoquée (il y a surement eu une modification des paramètres de sécurité de l'appareil)",
+                                    Snackbar.LENGTH_LONG
+                                ).show()
+                                loginViewModel.removeBiometricDataForUser()
+                                binding.debugInfo.text = loginViewModel.getDebugInfos()
+                            }
+                            else -> {
+                                Log.e("Biometric", "Error while trying to authenticate with biometric", failure)
+                                loginViewModel.removeBiometricDataForUser()
+                            }
                         }
                     }
 
@@ -154,7 +181,6 @@ class LoginFragment : Fragment() {
         }
 
         loginButton.setOnClickListener {
-
             loadingProgressBar.visibility = View.VISIBLE
             loginViewModel.login(
                 passwordEditText.text.toString()
@@ -163,29 +189,33 @@ class LoginFragment : Fragment() {
 
         view.post {
 
-            loginViewModel.getCanTriggerBiometricPrompt()
-                .observe(viewLifecycleOwner) { canTriggerBiometricPrompt ->
-                    if (canTriggerBiometricPrompt) {
-                        loginViewModel.loginWithBiometric(requireActivity())
+                loginViewModel.getCanTriggerBiometricPrompt().observe(viewLifecycleOwner) { canTriggerBiometricPrompt ->
+                        Log.d("Biometric Status checked", "Can trigger biometric prompt: $canTriggerBiometricPrompt")
+                        if (canTriggerBiometricPrompt) {
+                            loginViewModel.loginWithBiometric(requireActivity())
+                        }
                     }
-                }
-            loginViewModel.getBiometricAvailable()
-                .observe(viewLifecycleOwner) { biometricAvailable ->
-                    when(biometricAvailable) {
-                        BIOMETRIC_ERROR_NONE_ENROLLED -> {
-                            // Prompts the user to create credentials that your app accepts.
-                            val enrollIntent = Intent(Settings.ACTION_BIOMETRIC_ENROLL).apply {
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                                    putExtra(Settings.EXTRA_BIOMETRIC_AUTHENTICATORS_ALLOWED, BIOMETRIC_STRONG or DEVICE_CREDENTIAL)
+                loginViewModel.getBiometricAvailable()
+                    .observe(viewLifecycleOwner) { biometricAvailable ->
+                        when (biometricAvailable) {
+                            BIOMETRIC_ERROR_NONE_ENROLLED -> {
+                                // Prompts the user to create credentials that your app accepts.
+                                val enrollIntent = Intent(Settings.ACTION_BIOMETRIC_ENROLL).apply {
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                                        putExtra(
+                                            Settings.EXTRA_BIOMETRIC_AUTHENTICATORS_ALLOWED,
+                                            BIOMETRIC_STRONG or DEVICE_CREDENTIAL
+                                        )
+                                    }
                                 }
+                                launchSettings.launch(enrollIntent)
                             }
-                            launchSettings.launch(enrollIntent)
-                        }
-                        else -> {
-                            Log.d("Biometric Status checked", biometricAvailable.getMessage())
+
+                            else -> {
+                                Log.d("Biometric Status checked", biometricAvailable.getMessage())
+                            }
                         }
                     }
-                }
         }
     }
 

@@ -2,8 +2,10 @@ package com.example.biometricsampleapp.biometric
 
 import android.app.Application
 import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import android.util.Log
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricManager.Authenticators.DEVICE_CREDENTIAL
 import androidx.biometric.BiometricPrompt
@@ -78,6 +80,8 @@ enum class BiometricAvailabilityStatuses {
 
 class BiometricHelper(val application: Application, private val userId: String) {
 
+    // Todo: Gérer les exceptions : https://developer.android.com/reference/android/security/keystore/KeyPermanentlyInvalidatedException
+
     // Initialisation du KeyStore et du nom de la clé pour stocker le mot de passe
     // Bien utiliser `AndroidKeyStore` pour stocker les données de manière sécurisée -> https://developer.android.com/training/articles/keystore
     private val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
@@ -112,7 +116,7 @@ class BiometricHelper(val application: Application, private val userId: String) 
     /**
      * On récupère la clé secrète stockée dans le KeyStore via le keyName défini (1 nom par user / par valeur)
      */
-    private fun getSecretKey(): SecretKey {
+    private fun getSecretKey(): SecretKey? {
         val keyName = getKeyNameForUser()
         return (keyStore.getKey(keyName, null) as SecretKey)
     }
@@ -122,17 +126,22 @@ class BiometricHelper(val application: Application, private val userId: String) 
         return keyStore.containsAlias(keyName)
     }
 
-    fun isBiometricKeyValid(): Boolean {
+    fun isBiometricKeyValid(who: String): Boolean {
         return try {
+            Log.d("BiometricHelper", "Trying to get secret key from $who")
             getSecretKey()
             true
+        } catch (e: KeyPermanentlyInvalidatedException) {
+            Log.d("BiometricHelper", "Key is invalid")
+            false
         } catch (e: Exception) {
+            Log.d("BiometricHelper", "Exception, ${e.message.toString()}")
             false
         }
     }
 
     fun ensureBiometricKeyAvailable() {
-        if (!isBiometricKeyValid()) {
+        if (!isBiometricKeyValid("ensureBiometricKeyAvailable")) {
             createBiometricKey()
         }
     }
@@ -147,8 +156,6 @@ class BiometricHelper(val application: Application, private val userId: String) 
     fun getBiometricAvailabilityStatuses(): BiometricAvailabilityStatuses {
         return BiometricAvailabilityStatuses.getEnumFromCanAuthenticateResponse(BiometricManager.from(application).canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG or DEVICE_CREDENTIAL))
     }
-
-
 
     fun getCipher(): Cipher {
         return Cipher.getInstance(KeyProperties.KEY_ALGORITHM_AES + "/" + KeyProperties.BLOCK_MODE_CBC + "/" + KeyProperties.ENCRYPTION_PADDING_PKCS7)
@@ -172,14 +179,7 @@ class BiometricHelper(val application: Application, private val userId: String) 
         encryptedPin: String,
         completion: (Result<String>) -> Unit
     ) {
-        val cipher = getCipher()
-        val secretKey = getSecretKey()
-
-        val combined = Base64.decode(encryptedPin, Base64.DEFAULT)
-        val iv = combined.slice(0 until 16).toByteArray()
-        val encryptedBytes = combined.slice(16 until combined.size).toByteArray()
-
-        cipher.init(Cipher.DECRYPT_MODE, secretKey, IvParameterSpec(iv))
+        val (cipher, encryptedBytes) = preparePinForDecryption(encryptedPin)
 
         val cryptoObject = BiometricPrompt.CryptoObject(cipher)
 
@@ -219,14 +219,7 @@ class BiometricHelper(val application: Application, private val userId: String) 
         encryptedPin: String,
         completion: (Result<Pair<String, BiometricPrompt.CryptoObject>>) -> Unit
     )  {
-        val cipher = getCipher()
-        val secretKey = getSecretKey()
-
-        val combined = Base64.decode(encryptedPin, Base64.DEFAULT)
-        val iv = combined.slice(0 until 16).toByteArray()
-        val encryptedBytes = combined.slice(16 until combined.size).toByteArray()
-
-        cipher.init(Cipher.DECRYPT_MODE, secretKey, IvParameterSpec(iv))
+        val (cipher, encryptedBytes) = preparePinForDecryption(encryptedPin)
 
         val cryptoObject = BiometricPrompt.CryptoObject(cipher)
 
@@ -260,17 +253,21 @@ class BiometricHelper(val application: Application, private val userId: String) 
         biometricPrompt.authenticate(promptInfo, cryptoObject)
     }
 
+    private fun preparePinForDecryption(encryptedPin: String): Pair<Cipher, ByteArray> {
+        val cipher = getCipher()
+        val secretKey = getSecretKey()
+
+        val combined = Base64.decode(encryptedPin, Base64.DEFAULT)
+        val iv = combined.slice(0 until 16).toByteArray()
+        val encryptedBytes = combined.slice(16 until combined.size).toByteArray()
+
+        cipher.init(Cipher.DECRYPT_MODE, secretKey, IvParameterSpec(iv))
+        return Pair(cipher, encryptedBytes)
+    }
+
     fun offerBiometricEnrollment(activity: FragmentActivity, pincode: String, completion: (Result<Pair<String, BiometricPrompt.CryptoObject>>) -> Unit) {
 
-        val cipher = getCipher()
-        if (hasSecretKey()) {
-            removeBiometricKey()
-            createBiometricKey()
-        } else {
-           createBiometricKey()
-        }
-        val secretKey = getSecretKey()
-        cipher.init(Cipher.ENCRYPT_MODE, secretKey)
+        val cipher = prepareCipherForEncryption()
 
         val cryptoObject = BiometricPrompt.CryptoObject(cipher)
 
@@ -299,5 +296,18 @@ class BiometricHelper(val application: Application, private val userId: String) 
         })
 
         biometricPrompt.authenticate(promptInfo, cryptoObject)
+    }
+
+    private fun prepareCipherForEncryption(): Cipher {
+        val cipher = getCipher()
+        if (hasSecretKey()) {
+            removeBiometricKey()
+            createBiometricKey()
+        } else {
+            createBiometricKey()
+        }
+        val secretKey = getSecretKey()
+        cipher.init(Cipher.ENCRYPT_MODE, secretKey)
+        return cipher
     }
 }
